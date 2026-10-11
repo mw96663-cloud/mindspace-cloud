@@ -44,42 +44,103 @@
       background: rgba(255,255,255,0.24);
     }
 
+    #controls {
+      position: fixed;
+      left: 50%;
+      bottom: 22px;
+      transform: translateX(-50%);
+      z-index: 10;
+      width: min(92vw, 580px);
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 9px;
+      color: white;
+      text-align: center;
+    }
+
+    #micButton {
+      border: 1px solid rgba(255,255,255,0.45);
+      border-radius: 40px;
+      background: rgba(14,60,75,0.85);
+      color: white;
+      padding: 13px 24px;
+      font-size: 17px;
+      cursor: pointer;
+    }
+
+    #micButton:disabled {
+      opacity: 0.6;
+      cursor: wait;
+    }
+
+    #status {
+      font-size: 13px;
+      line-height: 1.5;
+      padding: 6px 12px;
+      background: rgba(0,0,0,0.35);
+      border-radius: 12px;
+      max-width: 100%;
+    }
+
+    #transcript {
+      font-size: 14px;
+      max-height: 60px;
+      overflow: auto;
+      text-shadow: 0 1px 3px black;
+    }
+
     @media (max-width: 600px) {
       #fullscreenButton {
         top: 12px;
         right: 12px;
-        padding: 10px 13px;
+        padding: 10px;
       }
     }
   </style>
 </head>
 
 <body>
-  <button id="fullscreenButton" type="button">⛶ 全螢幕</button>
+  <button id="fullscreenButton" type="button">
+    ⛶ 全螢幕
+  </button>
+
+  <div id="controls">
+    <button id="micButton" type="button">
+      🎤 開始說出想像
+    </button>
+
+    <div id="status" role="status" aria-live="polite">
+      點擊麥克風，說出你想創造的世界
+    </div>
+
+    <div id="transcript" aria-live="polite"></div>
+  </div>
 
   <script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.11.3/p5.min.js"></script>
   <script src="./sketch.js"></script>
 
   <script>
-    const fullscreenButton = document.getElementById("fullscreenButton");
+    const fullscreenButton =
+      document.getElementById("fullscreenButton");
 
     fullscreenButton.addEventListener("click", async () => {
       try {
         if (!document.fullscreenElement) {
           await document.documentElement.requestFullscreen();
-          fullscreenButton.textContent = "⤢ 離開全螢幕";
         } else {
           await document.exitFullscreen();
-          fullscreenButton.textContent = "⛶ 全螢幕";
         }
       } catch (error) {
-        alert("目前瀏覽器無法切換全螢幕，請確認瀏覽器權限。");
+        alert("瀏覽器無法切換全螢幕。");
       }
     });
 
     document.addEventListener("fullscreenchange", () => {
       fullscreenButton.textContent =
-        document.fullscreenElement ? "⤢ 離開全螢幕" : "⛶ 全螢幕";
+        document.fullscreenElement
+          ? "⤢ 離開全螢幕"
+          : "⛶ 全螢幕";
     });
   </script>
 </body>
