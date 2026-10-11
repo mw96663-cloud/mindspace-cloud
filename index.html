@@ -1,407 +1,67 @@
-
 <!DOCTYPE html>
 <html lang="zh-Hant">
 <head>
-<meta charset="UTF-8">
-<meta name="viewport"
-  content="width=device-width,initial-scale=1">
-<title>Mindspace AI SVG V1</title>
-<style>
-* { box-sizing:border-box; }
-body {
-  margin:0;
-  min-height:100vh;
-  background:#232940;
-  color:white;
-  font-family:Arial,"Noto Sans TC",sans-serif;
-}
-header {
-  text-align:center;
-  padding:25px 15px 18px;
-}
-h1 {
-  margin:0;
-  letter-spacing:5px;
-  font-size:32px;
-}
-header p {
-  margin:9px 0 0;
-  color:#d7cde5;
-  font-size:14px;
-}
-main {
-  width:min(1000px,94vw);
-  margin:auto;
-}
-#scene {
-  position:relative;
-  width:100%;
-  aspect-ratio:8/5;
-  border-radius:24px;
-  overflow:hidden;
-  background:linear-gradient(
-    160deg,#e5d3ee,#b6d8e3
-  );
-  box-shadow:0 15px 45px #0006;
-}
-#sceneImage {
-  position:absolute;
-  inset:0;
-  width:100%;
-  height:100%;
-  object-fit:contain;
-  display:none;
-}
-#particles {
-  position:absolute;
-  inset:0;
-  width:100%;
-  height:100%;
-  pointer-events:none;
-}
-#placeholder {
-  position:absolute;
-  inset:0;
-  display:flex;
-  align-items:center;
-  justify-content:center;
-  color:#605572;
-  text-align:center;
-  padding:25px;
-  font-size:19px;
-}
-.panel {
-  margin:20px 0;
-  padding:20px;
-  background:#ffffff12;
-  border:1px solid #ffffff33;
-  border-radius:20px;
-}
-.row {
-  display:flex;
-  flex-wrap:wrap;
-  gap:10px;
-}
-input {
-  flex:1;
-  min-width:200px;
-  padding:14px 16px;
-  background:#ffffff15;
-  border:1px solid #ffffff55;
-  border-radius:12px;
-  color:white;
-  font-size:16px;
-}
-input::placeholder {
-  color:#ffffff99;
-}
-button {
-  padding:14px 19px;
-  background:#e8a8c9;
-  color:#30263e;
-  border:0;
-  border-radius:12px;
-  font-size:15px;
-  font-weight:bold;
-  cursor:pointer;
-}
-button:disabled {
-  opacity:.5;
-  cursor:wait;
-}
-#download {
-  background:#bcb5e7;
-}
-#status {
-  margin-top:15px;
-  min-height:24px;
-  line-height:1.6;
-}
-#details {
-  margin-top:7px;
-  font-size:12px;
-  color:#d3cde1;
-}
-footer {
-  text-align:center;
-  color:#ffffff80;
-  padding:0 0 20px;
-  font-size:12px;
-}
-</style>
+  <meta charset="UTF-8" />
+
+  <meta
+    name="viewport"
+    content="width=device-width, initial-scale=1.0"
+  />
+
+  <title>Mindspace｜AI 想像世界</title>
+
+  <link rel="stylesheet" href="./style.css" />
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.11.11/p5.min.js"></script>
+  <script src="./sketch.js" defer></script>
 </head>
+
 <body>
-<header>
-  <h1>MINDSPACE</h1>
-  <p>讓想像，長成一個世界</p>
-</header>
 
-<main>
-  <div id="scene">
-    <div id="placeholder">
-      輸入一個想像，讓 Gemini 畫出你的世界
-    </div>
-    <img id="sceneImage" alt="AI 生成的 SVG 場景">
-    <div id="particles"></div>
-  </div>
+  <main class="app">
 
-  <div class="panel">
-    <div class="row">
-      <input id="idea"
-        value="粉紅色的森林，有三朵蘑菇和星星"
-        placeholder="說說你想像的世界">
+    <header class="header">
+      <h1>Mindspace</h1>
+      <p>說出你的想像，讓 AI 創造世界</p>
+    </header>
 
-      <button id="generate">
-        ✨ AI 生成 SVG
-      </button>
+    <section class="world-section">
+      <div id="canvas-container"></div>
+    </section>
 
-      <button id="download" disabled>
-        ↓ 下載 SVG
-      </button>
-    </div>
+    <section class="controls">
 
-    <div id="status">
-      準備就緒，點擊 AI 生成 SVG。
-    </div>
+      <label for="idea-input">
+        你想創造什麼世界？
+      </label>
 
-    <div id="details">
-      Gemini 自由生成 · 簡單 2.5D 黏土插畫
-    </div>
-  </div>
-</main>
+      <textarea
+        id="idea-input"
+        rows="3"
+        placeholder="例如：我想要一個粉紅色的森林，天空有星星和月亮"
+      >紫色的森林，天空有星星和月亮</textarea>
 
-<footer>
-  Mindspace V1 · AI SVG Prototype
-</footer>
+      <div class="buttons">
 
-<script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.11.3/p5.min.js"></script>
-<script>
-"use strict";
+        <button id="mic-button" type="button">
+          🎤 開始語音辨識
+        </button>
 
-const $ = id => document.getElementById(id);
+        <button id="generate-button" type="button">
+          ✨ 生成 AI 世界
+        </button>
 
-let currentSVG = "";
-let currentURL = "";
-let busy = false;
+      </div>
 
-function setStatus(message) {
-  $("status").textContent = message;
-}
+      <p id="status" role="status" aria-live="polite">
+        準備完成，請開始說話或輸入文字。
+      </p>
 
-function setBusy(value) {
-  busy = value;
-  $("generate").disabled = value;
-  $("generate").textContent = value
-    ? "✨ Gemini 正在繪製…"
-    : "✨ AI 生成 SVG";
-}
+      <p id="model-info"></p>
 
-function displaySVG(svg) {
-  return new Promise((resolve,reject)=>{
-    const blob = new Blob(
-      [svg],
-      {type:"image/svg+xml;charset=utf-8"}
-    );
+    </section>
 
-    const url = URL.createObjectURL(blob);
-    const img = new Image();
+  </main>
 
-    img.onload = () => {
-      $("sceneImage").src = url;
-      $("sceneImage").style.display = "block";
-      $("placeholder").style.display = "none";
-
-      const oldURL = currentURL;
-
-      currentURL = url;
-      currentSVG = svg;
-      $("download").disabled = false;
-
-      if (oldURL) {
-        URL.revokeObjectURL(oldURL);
-      }
-
-      resolve();
-    };
-
-    img.onerror = () => {
-      URL.revokeObjectURL(url);
-      reject(
-        new Error("SVG 已回傳，但瀏覽器無法顯示")
-      );
-    };
-
-    img.src = url;
-  });
-}
-
-async function generateScene() {
-  if (busy) return;
-
-  const idea = $("idea").value.trim();
-
-  if (idea.length < 2) {
-    setStatus("請先輸入至少兩個字。");
-    return;
-  }
-
-  setBusy(true);
-  setStatus(
-    "正在等待 Gemini 繪製簡單 SVG，請稍候…"
-  );
-
-  // 包含伺服器可能進行的重試
-  const controller = new AbortController();
-  const timer = setTimeout(
-    () => controller.abort(),
-    110000
-  );
-
-  try {
-    const response = await fetch(
-      "/api/generate-svg",
-      {
-        method:"POST",
-        headers:{
-          "Content-Type":"application/json"
-        },
-        body:JSON.stringify({idea}),
-        signal:controller.signal
-      }
-    );
-
-    const data = await response.json();
-
-    if (!response.ok || !data.ok) {
-      throw new Error(
-        data.error || "AI 生成失敗"
-      );
-    }
-
-    if (!data.svg) {
-      throw new Error(
-        "Gemini 沒有回傳 SVG"
-      );
-    }
-
-    await displaySVG(data.svg);
-
-    setStatus(
-      "✅ Gemini 已成功生成 SVG 場景！"
-    );
-
-    $("details").textContent =
-      "AI 模型：" + (data.model || "Gemini") +
-      " · 可下載 SVG";
-
-  } catch(error) {
-    console.error(error);
-
-    if (error.name === "AbortError") {
-      setStatus(
-        "❌ 等待超時。Gemini 可能仍然繁忙。"
-      );
-    } else {
-      setStatus(
-        "❌ " + error.message
-      );
-    }
-
-    // 保留上一次成功的 SVG
-  } finally {
-    clearTimeout(timer);
-    setBusy(false);
-  }
-}
-
-function downloadSVG() {
-  if (!currentSVG) return;
-
-  const blob = new Blob(
-    [currentSVG],
-    {type:"image/svg+xml"}
-  );
-
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement("a");
-
-  a.href = url;
-  a.download = "mindspace-ai-scene.svg";
-  document.body.appendChild(a);
-  a.click();
-  a.remove();
-
-  setTimeout(
-    ()=>URL.revokeObjectURL(url),
-    1000
-  );
-}
-
-$("generate").onclick = generateScene;
-$("download").onclick = downloadSVG;
-
-$("idea").onkeydown = event => {
-  if (event.key === "Enter") {
-    generateScene();
-  }
-};
-
-// ===== p5.js 輕量漂浮粒子 =====
-
-let particles = [];
-
-function setup() {
-  const parent = $("particles");
-  const canvas = createCanvas(
-    parent.clientWidth,
-    parent.clientHeight
-  );
-
-  canvas.parent("particles");
-
-  for (let i=0;i<35;i++) {
-    particles.push({
-      x:random(width),
-      y:random(height),
-      r:random(1,4),
-      speed:random(.2,.7),
-      seed:random(100)
-    });
-  }
-}
-
-function draw() {
-  clear();
-  noStroke();
-
-  for (const p of particles) {
-    p.y -= p.speed;
-
-    if (p.y < -5) {
-      p.y = height+5;
-      p.x = random(width);
-    }
-
-    fill(
-      255,255,255,
-      70+40*sin(frameCount*.02+p.seed)
-    );
-
-    circle(
-      p.x+sin(frameCount*.01+p.seed)*5,
-      p.y,
-      p.r*2
-    );
-  }
-}
-
-function windowResized() {
-  const parent = $("particles");
-  resizeCanvas(
-    parent.clientWidth,
-    parent.clientHeight
-  );
-}
-</script>
 </body>
 </html>
