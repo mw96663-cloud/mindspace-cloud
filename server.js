@@ -1,428 +1,654 @@
 
-// Mindspace — Gemini SVG Server
-// 需要 Node.js 20 或以上
+'use strict';
 
-const http = require("node:http");
-const fs = require("node:fs");
-const path = require("node:path");
+const http = require('node:http');
+const fs = require('node:fs');
+const path = require('node:path');
+
+const {
+  DOMParser,
+  XMLSerializer
+} = require('@xmldom/xmldom');
 
 const PORT = Number(process.env.PORT) || 3000;
-
-// Render 可以另外設定 GEMINI_MODEL 覆蓋預設值
 const MODEL =
-  process.env.GEMINI_MODEL ||
-  "gemini-3.8-flash";
+  process.env.GEMINI_MODEL || 'gemini-3.8-flash';
+const API_KEY = process.env.GEMINI_API_KEY || '';
 
-const API_KEY = process.env.GEMINI_API_KEY;
+const MAX_BODY = 8192;
 
-const MIME = {
-  ".html": "text/html; charset=utf-8",
-  ".js": "text/javascript; charset=utf-8",
-  ".css": "text/css; charset=utf-8"
-};
-
-function sendJSON(res, status, data) {
+function send(res, status, obj) {
   if (res.headersSent || res.destroyed) return;
 
   res.writeHead(status, {
-    "Content-Type": "application/json; charset=utf-8",
-    "Cache-Control": "no-store"
+    'Content-Type': 'application/json; charset=utf-8',
+    'Cache-Control': 'no-store'
   });
-  res.end(JSON.stringify(data));
+
+  res.end(JSON.stringify(obj));
 }
 
-function readJSON(req) {
+function readBody(req) {
   return new Promise((resolve, reject) => {
-    let body = "";
-    let tooLarge = false;
+    let chunks = [];
+    let size = 0;
+    let done = false;
 
-    req.on("data", chunk => {
-      body += chunk;
+    req.on('data', b => {
+      size += b.length;
 
-      if (body.length > 12000) {
-        tooLarge = true;
-        reject(new Error("輸入內容太長"));
+      if (size > MAX_BODY) {
+        done = true;
+        reject(new Error('輸入太長'));
         req.destroy();
+        return;
       }
+
+      chunks.push(b);
     });
 
-    req.on("end", () => {
-      if (tooLarge) return;
+    req.on('end', () => {
+      if (done) return;
+
       try {
-        resolve(JSON.parse(body || "{}"));
-      } catch (_) {
-        reject(new Error("無法解析輸入資料"));
+        resolve(
+          JSON.parse(
+            Buffer.concat(chunks).toString('utf8')
+          )
+        );
+      } catch {
+        reject(new Error('輸入格式不正確'));
       }
     });
 
-    req.on("error", reject);
+    req.on('error', reject);
   });
 }
 
-// 僅允許簡單 SVG 圖形，不執行 AI 產生的程式碼
-function validateSVG(text) {
-  const cleaned = String(text || "")
-    .replace(/```(?:svg|xml)?/gi, "")
-    .replace(/```/g, "")
-    .trim();
+// ---------- SVG 安全白名單 ----------
 
-  const match = cleaned.match(
-    /<svg\b[\s\S]*?<\/svg>/i
+const TAGS = new Set([
+  'svg',
+  'g',
+  'circle',
+  'ellipse',
+  'rect',
+  'path',
+  'polygon',
+  'polyline',
+  'line',
+  'defs',
+  'linearGradient',
+  'radialGradient',
+  'stop'
+]);
+
+const ATTRS = new Set([
+  'xmlns',
+  'viewBox',
+  'width',
+  'height',
+  'x',
+  'y',
+  'x1',
+  'x2',
+  'y1',
+  'y2',
+  'cx',
+  'cy',
+  'r',
+  'rx',
+  'ry',
+  'd',
+  'points',
+  'fill',
+  'stroke',
+  'stroke-width',
+  'stroke-linecap',
+  'stroke-linejoin',
+  'opacity',
+  'fill-opacity',
+  'stroke-opacity',
+  'transform',
+  'offset',
+  'stop-color',
+  'stop-opacity',
+  'gradientUnits',
+  'gradientTransform',
+  'fx',
+  'fy',
+  'spreadMethod',
+  'id'
+]);
+
+const REF =
+  /^url\(#([A-Za-z][\w-]{0,39})\)$/;
+
+const NUM =
+  /^-?(?:\d+\.?\d*|\.\d+)(?:[ ,.-]+(?:\d+\.?\d*|\.\d+))*$/;
+
+// ---------- 檢查並整理 SVG ----------
+
+function safeSVG(input) {
+  const match = String(input || '').match(
+    /<svg\b[\s\S]*?<\/svg\s*>/i
   );
 
   if (!match) {
-    throw new Error("Gemini 沒有產生完整 SVG");
+    throw new Error('AI 未回傳完整 SVG');
   }
 
-  const svg = match[0];
+  const raw = match[0];
 
-  if (svg.length > 20000) {
-    throw new Error("SVG 太複雜，請重新生成");
+  if (raw.length > 30000) {
+    throw new Error('SVG 過大，請重試');
   }
 
-  const allowedTags = new Set([
-    "svg", "g", "circle", "ellipse",
-    "rect", "path", "line",
-    "polygon", "polyline"
-  ]);
+  let bad = false;
 
-  const allowedAttrs = new Set([
-    "xmlns", "viewBox", "width", "height",
-    "x", "y", "x1", "y1", "x2", "y2",
-    "cx", "cy", "r", "rx", "ry",
-    "d", "points", "fill", "stroke",
-    "stroke-width", "stroke-linecap",
-    "stroke-linejoin", "opacity",
-    "fill-opacity", "stroke-opacity",
-    "transform"
-  ]);
+  const parser = new DOMParser({
+    onError: () => {
+      bad = true;
+    },
+    onWarning: () => {}
+  });
+
+  const doc = parser.parseFromString(
+    raw,
+    'image/svg+xml'
+  );
 
   if (
-    /<!|<\?|&(?:#|[a-z])/i.test(svg) ||
-    /<\s*(script|style|image|use|foreignObject|iframe)\b/i.test(svg) ||
-    /(?:javascript:|data:|https?:|url\s*\()/i.test(svg)
+    bad ||
+    !doc.documentElement ||
+    doc.documentElement.localName !== 'svg'
   ) {
-    throw new Error("SVG 包含不允許的內容");
+    throw new Error('SVG 格式有誤');
   }
 
-  const tags = svg.match(/<[^>]*>/g) || [];
+  let nodes = 0;
+  const ids = new Set();
+  const refs = [];
 
-  for (const tag of tags) {
-    const name = tag.match(
-      /^<\s*\/?\s*([a-zA-Z][\w:-]*)/
-    );
-
-    if (!name || !allowedTags.has(name[1])) {
-      throw new Error("SVG 使用不支援的元素");
+  function walk(node) {
+    if (node.nodeType === 3) {
+      if (node.nodeValue.trim()) {
+        throw new Error(
+          'SVG 含有非圖形文字'
+        );
+      }
+      return;
     }
 
-    if (/^<\s*\//.test(tag)) continue;
+    if (node.nodeType !== 1) {
+      throw new Error(
+        'SVG 含有不支援的內容'
+      );
+    }
 
-    // 讀取屬性並拒絕不允許的屬性
-    const attrs = tag
-      .replace(/^<\s*[\w:-]+/, "")
-      .replace(/\/?>$/, "");
+    nodes++;
 
-    const attrPattern =
-      /([a-zA-Z][\w:-]*)\s*=\s*("([^"]*)"|'([^']*)')/g;
+    if (nodes > 120) {
+      throw new Error('SVG 圖形太多');
+    }
 
-    let remainder = attrs;
-    let m;
+    if (!TAGS.has(node.nodeName)) {
+      throw new Error(
+        'SVG 包含不支援的圖形：' +
+        node.nodeName
+      );
+    }
 
-    while ((m = attrPattern.exec(attrs)) !== null) {
-      if (!allowedAttrs.has(m[1])) {
+    for (
+      let i = 0;
+      i < node.attributes.length;
+      i++
+    ) {
+      const a = node.attributes.item(i);
+      const name = a.name;
+      const value = a.value.trim();
+
+      if (
+        !ATTRS.has(name) ||
+        value.length > 5000
+      ) {
         throw new Error(
-          "SVG 包含不支援的屬性：" + m[1]
+          'SVG 屬性不允許：' + name
         );
       }
 
-      const value = m[3] ?? m[4] ?? "";
-
-      if (/[<>&]/.test(value)) {
-        throw new Error("SVG 屬性內容不安全");
+      if (name === 'xmlns') {
+        if (
+          value !==
+          'http://www.w3.org/2000/svg'
+        ) {
+          throw new Error(
+            'SVG 命名空間錯誤'
+          );
+        }
+        continue;
       }
 
-      remainder = remainder.replace(m[0], " ");
+      if (name === 'id') {
+        if (
+          !/^[A-Za-z][\w-]{0,39}$/.test(value)
+        ) {
+          throw new Error(
+            'SVG ID 不合法'
+          );
+        }
+
+        ids.add(value);
+        continue;
+      }
+
+      if (
+        name === 'fill' ||
+        name === 'stroke'
+      ) {
+        const m = value.match(REF);
+
+        if (m) {
+          refs.push(m[1]);
+          continue;
+        }
+
+        if (
+          !/^(none|transparent|#[0-9a-fA-F]{3,8}|[a-zA-Z]{1,20})$/.test(value)
+        ) {
+          throw new Error(
+            'SVG 顏色不合法'
+          );
+        }
+        continue;
+      }
+
+      if (name === 'stop-color') {
+        if (
+          !/^#[0-9a-fA-F]{3,8}$/.test(value)
+        ) {
+          throw new Error(
+            '漸層顏色不合法'
+          );
+        }
+        continue;
+      }
+
+      if (
+        name === 'd' ||
+        name === 'points' ||
+        name === 'transform' ||
+        name === 'gradientTransform'
+      ) {
+        if (
+          !/^[\d\s,\.\-+eE a-zA-Z()]*$/.test(value) ||
+          /url|script|matrix3d/i.test(value)
+        ) {
+          throw new Error(
+            'SVG 路徑不合法'
+          );
+        }
+        continue;
+      }
+
+      if (name === 'viewBox') {
+        if (value !== '0 0 1000 600') {
+          throw new Error(
+            'SVG 尺寸不符'
+          );
+        }
+        continue;
+      }
+
+      if (
+        name === 'offset' &&
+        /^(?:100|[0-9]{1,2})%$/.test(value)
+      ) {
+        continue;
+      }
+
+      if (!NUM.test(value)) {
+        throw new Error(
+          'SVG 數值不合法：' + name
+        );
+      }
     }
 
-    if (remainder.trim()) {
-      throw new Error("SVG 屬性格式不正確");
+    for (
+      let child = node.firstChild;
+      child;
+      child = child.nextSibling
+    ) {
+      walk(child);
     }
   }
 
-  return svg;
+  walk(doc.documentElement);
+
+  for (const ref of refs) {
+    if (!ids.has(ref)) {
+      throw new Error(
+        'SVG 漸層引用不存在'
+      );
+    }
+  }
+
+  doc.documentElement.setAttribute(
+    'xmlns',
+    'http://www.w3.org/2000/svg'
+  );
+
+  doc.documentElement.setAttribute(
+    'viewBox',
+    '0 0 1000 600'
+  );
+
+  return new XMLSerializer()
+    .serializeToString(
+      doc.documentElement
+    );
 }
 
-function makePrompt(idea) {
+// ---------- 黏土風格 AI 提示詞 ----------
+
+function prompt(idea) {
   return `
-你是兒童互動藝術作品 Mindspace 的 SVG 插畫師。
+你是兒童互動藝術作品 Mindspace 的場景設計師。
 
-孩子親手創作的黏土角色是主角。
-你只創造角色周圍的想像環境。
+孩子自己捏的實體黏土生物是主角；
+你只創造它周圍的夢幻環境，不畫人物或主角。
 
-孩子說：
+孩子的想像：
 「${idea}」
 
-請將這段想像轉成一張簡單、童趣的 SVG 插畫。
+畫風：
+高質感手捏黏土 clay art / polymer clay，
+圓潤厚實、粉嫩糖果色、層疊的花朵、
+蘑菇、雲朵、柔和立體光澤與陰影。
 
-嚴格要求：
-1. 只輸出 SVG 原始碼，不要 Markdown。
-2. 根元素必須是：
+SVG 無法真的呈現材質貼圖，
+所以用 2～3 層橢圓與圓形、
+高光、漸層，模擬立體黏土感。
+
+構圖：
+1000×600 透明底。
+中間 x=350～650、y=180～520
+留空給真實黏土角色。
+左右和上方有豐富場景。
+不能蓋滿中央。
+
+嚴格規格：
+只輸出一個完整 SVG。
+根節點必須是：
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 600">
-3. 背景透明。
-4. 中間保留空間給黏土角色。
-5. 圖案主要放在左右兩側與上下方。
-6. 使用 10～25 個簡單圖形。
-7. 優先使用 circle、ellipse、rect、path、polygon。
-8. 不使用漸層、濾鏡、文字、動畫或圖片。
-9. 不使用 style、class、id、外部資源或事件屬性。
-10. 顏色直接使用 fill="#RRGGBB"。
-11. 可以使用 stroke、stroke-width 和 opacity。
-12. 請在 5000 字元內完成。
-13. 一定要以 </svg> 結尾。
 
-現在直接輸出 SVG。
+允許元素：
+svg,g,defs,linearGradient,radialGradient,stop,
+circle,ellipse,rect,path,polygon,polyline,line
+
+漸層 id 只能是英文字母數字。
+fill 可以使用 url(#id)。
+
+允許屬性：
+xmlns,viewBox,width,height,x,y,x1,x2,y1,y2,
+cx,cy,r,rx,ry,d,points,fill,stroke,
+stroke-width,stroke-linecap,stroke-linejoin,
+opacity,fill-opacity,stroke-opacity,transform,
+offset,stop-color,stop-opacity,gradientUnits,
+gradientTransform,fx,fy,spreadMethod,id
+
+禁止：
+style、class、文字、濾鏡、圖片、
+script、foreignObject、動畫、外部網址。
+
+請控制在 35～65 個 SVG 元素，
+以及 12000 字元內。
+
+優先畫完並閉合 SVG。
+使用柔和配色，讓物件具有陰影和高光。
+
+不要 Markdown，不要解說。
 `;
 }
 
-async function callGemini(idea) {
-  const endpoint =
-    "https://generativelanguage.googleapis.com/v1beta/models/" +
-    encodeURIComponent(MODEL) +
-    ":generateContent";
+// ---------- 呼叫 Gemini ----------
 
-  const controller = new AbortController();
+async function gemini(idea) {
+  const ctl = new AbortController();
 
-  // 單次請求最多 85 秒
-  const timeout = setTimeout(
-    () => controller.abort(),
-    85000
+  const timer = setTimeout(
+    () => ctl.abort(),
+    90000
   );
 
   try {
-    const response = await fetch(endpoint, {
-      method: "POST",
-      signal: controller.signal,
+    const endpoint =
+      'https://generativelanguage.googleapis.com/v1beta/models/' +
+      encodeURIComponent(MODEL) +
+      ':generateContent';
+
+    const r = await fetch(endpoint, {
+      method: 'POST',
+      signal: ctl.signal,
       headers: {
-        "Content-Type": "application/json",
-        "x-goog-api-key": API_KEY
+        'Content-Type': 'application/json',
+        'x-goog-api-key': API_KEY
       },
       body: JSON.stringify({
-        contents: [{
-          role: "user",
-          parts: [{
-            text: makePrompt(idea)
-          }]
-        }],
+        contents: [
+          {
+            parts: [
+              {
+                text: prompt(idea)
+              }
+            ]
+          }
+        ],
         generationConfig: {
-          temperature: 0.6,
-          maxOutputTokens: 8192,
-          responseMimeType: "text/plain"
+          temperature: .65,
+          maxOutputTokens: 8192
         }
       })
     });
 
-    const raw = await response.text();
+    const raw = await r.text();
 
     let data;
+
     try {
       data = JSON.parse(raw);
-    } catch (_) {
+    } catch {
       throw new Error(
-        "Gemini 回傳無效 JSON，HTTP " +
-        response.status
+        'Gemini 回傳格式不正確 (HTTP ' +
+        r.status +
+        ')'
       );
     }
 
-    if (!response.ok) {
-      const error = new Error(
-        "Gemini HTTP " + response.status +
-        "：" +
-        (data.error?.message || "未知錯誤")
+    if (!r.ok) {
+      const e = new Error(
+        'Gemini HTTP ' +
+        r.status +
+        '：' +
+        (data.error?.message || '未知錯誤')
       );
 
-      error.httpStatus = response.status;
-      throw error;
+      e.status = r.status;
+      throw e;
     }
 
-    const candidate = data.candidates?.[0];
-
-    const text = (
-      candidate?.content?.parts || []
+    const output = (
+      data.candidates?.[0]?.content?.parts || []
     )
-      .map(part => part.text || "")
-      .join("\n");
+      .map(p => p.text || '')
+      .join('');
 
-    if (!text) {
+    if (!output) {
       throw new Error(
-        "Gemini 沒有輸出 SVG。原因：" +
-        (candidate?.finishReason || "未知")
+        'Gemini 沒有產生圖形，原因：' +
+        (
+          data.candidates?.[0]?.finishReason ||
+          '未知'
+        )
       );
     }
 
-    return validateSVG(text);
+    return safeSVG(output);
 
   } finally {
-    clearTimeout(timeout);
+    clearTimeout(timer);
   }
 }
 
-async function handleGenerate(req, res) {
-  if (!API_KEY) {
-    return sendJSON(res, 503, {
-      ok: false,
-      error: "Render 尚未設定 GEMINI_API_KEY"
-    });
-  }
-
-  let body;
-  try {
-    body = await readJSON(req);
-  } catch (e) {
-    return sendJSON(res, 400, {
-      ok: false,
-      error: e.message
-    });
-  }
-
-  const idea = String(body.idea || "")
-    .trim()
-    .slice(0, 500);
-
-  if (idea.length < 2) {
-    return sendJSON(res, 400, {
-      ok: false,
-      error: "請先說出一段想像"
-    });
-  }
-
-  console.log(
-    "開始生成 SVG，模型：", MODEL
-  );
-
-  // 第一次失敗時，僅對暫時性錯誤重試
-  for (let attempt = 1; attempt <= 2; attempt++) {
-    try {
-      const svg = await callGemini(idea);
-
-      console.log(
-        "SVG 生成成功，長度：", svg.length
-      );
-
-      return sendJSON(res, 200, {
-        ok: true,
-        svg,
-        model: MODEL
-      });
-
-    } catch (error) {
-      console.error(
-        "Gemini attempt", attempt,
-        error.message
-      );
-
-      const retryable =
-        error.httpStatus === 429 ||
-        error.httpStatus === 503 ||
-        error.httpStatus === 504;
-
-      if (retryable && attempt === 1) {
-        await new Promise(
-          resolve => setTimeout(resolve, 1500)
-        );
-        continue;
-      }
-
-      const message =
-        error.name === "AbortError"
-          ? "Gemini 等待超過 85 秒。可能是模型處理太久，請稍後再試。"
-          : error.message;
-
-      return sendJSON(res, 502, {
-        ok: false,
-        error: message
-      });
-    }
-  }
-}
+// ---------- HTTP 伺服器 ----------
 
 const server = http.createServer(
   async (req, res) => {
-    const url = new URL(
-      req.url || "/",
-      "http://localhost"
-    );
+    const pathname = new URL(
+      req.url,
+      'http://localhost'
+    ).pathname;
 
-    if (url.pathname === "/api/health") {
-      return sendJSON(res, 200, {
+    if (pathname === '/api/health') {
+      return send(res, 200, {
         ok: true,
-        geminiKeyConfigured: Boolean(API_KEY),
+        geminiKeyConfigured: !!API_KEY,
         model: MODEL
       });
     }
 
-    if (url.pathname === "/api/generate-svg") {
-      if (req.method !== "POST") {
-        return sendJSON(res, 405, {
+    if (pathname === '/api/generate-svg') {
+      if (req.method !== 'POST') {
+        return send(res, 405, {
           ok: false,
-          error: "請使用 POST"
+          error: '請使用 POST'
         });
       }
 
-      return handleGenerate(req, res);
+      if (!API_KEY) {
+        return send(res, 503, {
+          ok: false,
+          error:
+            'Render 尚未設定 GEMINI_API_KEY'
+        });
+      }
+
+      let body;
+
+      try {
+        body = await readBody(req);
+      } catch (e) {
+        return send(res, 400, {
+          ok: false,
+          error: e.message
+        });
+      }
+
+      const idea = String(body.idea || '')
+        .trim()
+        .slice(0, 240);
+
+      if (idea.length < 2) {
+        return send(res, 400, {
+          ok: false,
+          error:
+            '請說出至少兩個字的想像'
+        });
+      }
+
+      try {
+        const svg = await gemini(idea);
+
+        console.log(
+          'SVG generated',
+          svg.length
+        );
+
+        return send(res, 200, {
+          ok: true,
+          svg,
+          model: MODEL
+        });
+
+      } catch (e) {
+        console.error(
+          'Gemini generation error:',
+          e.message
+        );
+
+        return send(
+          res,
+          e.status && e.status < 500
+            ? e.status
+            : 502,
+          {
+            ok: false,
+            error:
+              e.name === 'AbortError'
+                ? 'AI 超過 90 秒未回應，請縮短想像內容重試'
+                : e.message
+          }
+        );
+      }
     }
 
-    if (
-      req.method !== "GET" &&
-      req.method !== "HEAD"
-    ) {
-      return sendJSON(res, 405, {
+    if (req.method !== 'GET') {
+      return send(res, 405, {
         ok: false,
-        error: "Method Not Allowed"
+        error: '不支援的方法'
       });
     }
 
-    const allowedFiles = {
-      "/": "index.html",
-      "/index.html": "index.html",
-      "/sketch.js": "sketch.js"
+    const files = {
+      '/': 'index.html',
+      '/index.html': 'index.html',
+      '/sketch.js': 'sketch.js'
     };
 
-    const filename = allowedFiles[url.pathname];
+    const filename = files[pathname];
 
     if (!filename) {
-      return sendJSON(res, 404, {
+      return send(res, 404, {
         ok: false,
-        error: "Not Found"
+        error: 'Not Found'
       });
     }
 
-    const file = path.join(__dirname, filename);
+    fs.readFile(
+      path.join(__dirname, filename),
+      (err, data) => {
+        if (err) {
+          return send(res, 404, {
+            ok: false,
+            error: '找不到檔案'
+          });
+        }
 
-    fs.readFile(file, (error, data) => {
-      if (error) {
-        return sendJSON(res, 404, {
-          ok: false,
-          error: "找不到網頁檔案"
+        res.writeHead(200, {
+          'Content-Type':
+            filename.endsWith('.js')
+              ? 'text/javascript; charset=utf-8'
+              : 'text/html; charset=utf-8',
+          'Cache-Control': 'no-cache'
         });
+
+        res.end(data);
       }
-
-      res.writeHead(200, {
-        "Content-Type":
-          MIME[path.extname(file)] ||
-          "application/octet-stream"
-      });
-
-      res.end(
-        req.method === "HEAD" ? undefined : data
-      );
-    });
+    );
   }
 );
 
-server.listen(PORT, "0.0.0.0", () => {
-  console.log(
-    "Mindspace Server 已啟動，Port:", PORT
-  );
-  console.log("Gemini 模型：", MODEL);
-});
+server.requestTimeout = 130000;
+
+server.listen(
+  PORT,
+  '0.0.0.0',
+  () => {
+    console.log(
+      'Mindspace ready on',
+      PORT,
+      'model',
+      MODEL
+    );
+  }
+);
