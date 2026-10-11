@@ -1,45 +1,51 @@
 
-// Mindspace — p5.js 互動舞台
+// Mindspace — 語音互動與 p5.js 場景
 
 let particles = [];
 let t = 0;
-let immersive = false;
-
 let sceneImage = null;
 
-let speech = null;
+let recognition = null;
 let listening = false;
 let generating = false;
-
-let finalText = "";
-let lastInterim = "";
+let finalized = "";
+let interim = "";
 let silenceTimer = null;
-let speechStarted = false;
+let sessionActive = false;
+let submitted = false;
 
-const SILENCE_MS = 2400;
+const SILENCE_MS = 3000;
 
+function statusText(text) {
+  document.getElementById("status").textContent = text;
+}
 
-// ========================
-// 1. 初始化
-// ========================
+function transcriptText(text) {
+  document.getElementById("transcript").textContent = text;
+}
+
+function updateButton() {
+  const button = document.getElementById("micButton");
+  button.disabled = generating;
+  button.textContent = generating
+    ? "✨ AI 正在創造世界…"
+    : listening
+      ? "⏹ 結束說話並生成"
+      : "🎤 開始說出想像";
+}
+
+// ---------- p5.js ----------
 
 function setup() {
   createCanvas(windowWidth, windowHeight);
-
-  pixelDensity(
-    Math.min(window.devicePixelRatio || 1, 2)
-  );
-
+  pixelDensity(Math.min(devicePixelRatio || 1, 2));
   colorMode(HSB, 360, 100, 100, 100);
-
-  initParticles();
-  initSpeech();
+  makeParticles();
+  initRecognition();
 }
 
-
-function initParticles() {
+function makeParticles() {
   particles = [];
-
   for (let i = 0; i < 100; i++) {
     particles.push({
       x: random(width),
@@ -51,36 +57,23 @@ function initParticles() {
   }
 }
 
-
-// ========================
-// 2. 每一幀畫面
-// ========================
-
 function draw() {
   t += 0.008;
-
   drawWorld();
 
-  // 顯示 Gemini 生成的 SVG
   if (sceneImage) {
     push();
-
     imageMode(CENTER);
-    tint(255, 245);
 
-    const ratio = Math.min(
-      width / 1000,
-      height / 600
-    );
-
+    // 依照 SVG 原始 1000×600 比例縮放
+    const scale = Math.min(width / 1000, height / 600);
     image(
       sceneImage,
       width / 2,
       height / 2,
-      1000 * ratio,
-      600 * ratio
+      1000 * scale,
+      600 * scale
     );
-
     pop();
   }
 
@@ -88,86 +81,46 @@ function draw() {
   drawTitle();
 }
 
-
-// ========================
-// 3. 夢境背景
-// ========================
-
 function drawWorld() {
-  // 深藍到青綠漸層
   for (let y = 0; y < height; y += 3) {
-    let k = y / height;
-
-    let c = lerpColor(
+    const k = y / height;
+    stroke(lerpColor(
       color(222, 70, 18),
       color(177, 72, 46),
       k
-    );
-
-    stroke(c);
+    ));
     line(0, y, width, y);
   }
 
   noStroke();
-
-  // 遠方光暈
   for (let i = 0; i < 7; i++) {
-    let x = width * (0.15 + i * 0.12);
-
-    let y = height * (
-      0.35 + sin(t + i) * 0.08
-    );
-
+    const x = width * (0.15 + i * 0.12);
+    const y = height * (0.35 + sin(t + i) * 0.08);
     fill(185 + i * 8, 55, 85, 5);
-
-    circle(
-      x,
-      y,
-      height * (
-        0.4 + sin(t + i) * 0.05
-      )
-    );
+    circle(x, y, height * 0.4);
   }
 
-  // 地平線光波
   noFill();
-
   for (let j = 0; j < 4; j++) {
-    stroke(
-      180 + j * 12,
-      40,
-      90,
-      25 - j * 4
-    );
-
+    stroke(180 + j * 12, 40, 90, 25 - j * 4);
     strokeWeight(1.5);
     beginShape();
-
     for (let x = 0; x <= width; x += 12) {
-      let y =
+      const y =
         height * 0.72 +
         sin(x * 0.008 + t * 2 + j) * 16 +
         sin(x * 0.018 - t + j) * 7 +
         j * 15;
-
       vertex(x, y);
     }
-
     endShape();
   }
 }
 
-
-// ========================
-// 4. 漂浮粒子
-// ========================
-
 function drawParticles() {
   noStroke();
-
-  for (let p of particles) {
+  for (const p of particles) {
     p.y -= p.speed;
-
     p.x += sin(t + p.phase) * 0.4;
 
     if (p.y < -10) {
@@ -175,342 +128,266 @@ function drawParticles() {
       p.x = random(width);
     }
 
-    let alpha =
-      35 + 35 * sin(t * 2 + p.phase);
-
     fill(
       180 + 35 * sin(p.phase),
-      30,
-      100,
-      alpha
+      30, 100,
+      35 + 35 * sin(t * 2 + p.phase)
     );
-
     circle(p.x, p.y, p.r * 2);
   }
 }
 
-
-// ========================
-// 5. 標題
-// ========================
-
 function drawTitle() {
-  fill(0, 0, 100, 95);
   noStroke();
-
+  fill(0, 0, 100, 95);
   textAlign(LEFT, TOP);
   textStyle(NORMAL);
-
-  textSize(
-    constrain(width * 0.018, 18, 30)
-  );
-
+  textSize(constrain(width * 0.018, 18, 30));
   text("M I N D S P A C E", 30, 26);
 
   fill(0, 0, 100, 75);
-
-  textSize(
-    constrain(width * 0.009, 12, 16)
-  );
-
+  textSize(constrain(width * 0.009, 12, 16));
   text(
     "讓想像慢慢長出自己的世界",
-    32,
-    66
+    32, 66
   );
-}
-
-
-// ========================
-// 6. 畫面尺寸
-// ========================
-
-function mousePressed() {
-  immersive = true;
 }
 
 function windowResized() {
   resizeCanvas(windowWidth, windowHeight);
-  initParticles();
+  makeParticles();
 }
 
+// ---------- 語音辨識 ----------
 
-// ========================
-// 7. 狀態文字
-// ========================
-
-function setStatus(message) {
-  document.getElementById("status").textContent =
-    message;
-}
-
-function setTranscript(message) {
-  document.getElementById("transcript").textContent =
-    message;
-}
-
-function updateButton() {
-  const btn =
-    document.getElementById("micButton");
-
-  btn.disabled = generating;
-
-  if (generating) {
-    btn.textContent = "✨ 正在生成世界…";
-  } else if (listening) {
-    btn.textContent = "⏹ 結束說話並生成";
-  } else {
-    btn.textContent = "🎤 開始說出想像";
-  }
-}
-
-
-// ========================
-// 8. 語音辨識
-// ========================
-
-function initSpeech() {
-  const btn =
-    document.getElementById("micButton");
-
-  const Recognition =
+function initRecognition() {
+  const SpeechRecognition =
     window.SpeechRecognition ||
     window.webkitSpeechRecognition;
 
-  if (!Recognition) {
-    btn.disabled = true;
+  const button = document.getElementById("micButton");
 
-    setStatus(
-      "瀏覽器不支援語音辨識，請使用桌面版 Chrome 或 Edge。"
+  if (!SpeechRecognition) {
+    button.disabled = true;
+    statusText(
+      "此瀏覽器不支援語音辨識，請改用電腦版 Chrome"
     );
-
     return;
   }
 
-  speech = new Recognition();
+  recognition = new SpeechRecognition();
+  recognition.lang = "zh-TW";
+  recognition.continuous = true;
+  recognition.interimResults = true;
 
-  speech.lang = "zh-TW";
-  speech.continuous = true;
-  speech.interimResults = true;
-
-  speech.onstart = () => {
+  recognition.onstart = () => {
     listening = true;
-    speechStarted = true;
-
-    setStatus(
-      "正在聽你說話… 說完停頓約 2 秒就會生成"
-    );
-
+    statusText("正在聆聽…說完停頓約 3 秒");
     updateButton();
   };
 
-  speech.onresult = (event) => {
-    let interim = "";
+  recognition.onresult = (event) => {
+    let currentFinal = "";
+    let currentInterim = "";
 
-    for (
-      let i = event.resultIndex;
-      i < event.results.length;
-      i++
-    ) {
-      const piece =
-        event.results[i][0].transcript;
+    // 每次從全部結果重新組合，避免重複累加
+    for (let i = 0; i < event.results.length; i++) {
+      const result = event.results[i];
+      const words = result[0].transcript;
 
-      if (event.results[i].isFinal) {
-        finalText += piece + " ";
+      if (result.isFinal) {
+        currentFinal += words + " ";
       } else {
-        interim += piece;
+        currentInterim += words;
       }
     }
 
-    lastInterim = interim;
+    finalized = currentFinal.trim();
+    interim = currentInterim.trim();
 
-    setTranscript(
-      (finalText + " " + interim).trim()
+    transcriptText(
+      (finalized + " " + interim).trim()
     );
 
     clearTimeout(silenceTimer);
 
-    if (
-      (finalText + interim).trim().length >= 2
-    ) {
+    if ((finalized + interim).trim().length >= 2) {
       silenceTimer = setTimeout(
-        finishSpeech,
+        submitSpeech,
         SILENCE_MS
       );
     }
   };
 
-  speech.onerror = (event) => {
+  recognition.onerror = (event) => {
     clearTimeout(silenceTimer);
 
-    if (event.error === "no-speech") {
-      setStatus("沒有聽到聲音，請再試一次");
-    } else if (event.error === "not-allowed") {
-      setStatus("請允許瀏覽器使用麥克風");
+    if (event.error === "not-allowed") {
+      statusText("請允許瀏覽器使用麥克風");
+    } else if (event.error === "no-speech") {
+      statusText("沒有聽到聲音，請重新點擊麥克風");
     } else {
-      setStatus(
-        "語音辨識失敗：" + event.error
-      );
+      statusText("語音辨識錯誤：" + event.error);
     }
 
+    sessionActive = false;
     listening = false;
     updateButton();
   };
 
-  speech.onend = () => {
+  recognition.onend = () => {
     listening = false;
     updateButton();
 
-    if (
-      !generating &&
-      speechStarted &&
-      (finalText + lastInterim).trim().length >= 2
-    ) {
-      finishSpeech();
+    if (sessionActive && !submitted) {
+      const text = (finalized + " " + interim).trim();
+
+      if (text.length >= 2) {
+        submitSpeech();
+      } else {
+        sessionActive = false;
+        statusText("請重新點擊麥克風說話");
+      }
     }
   };
 
-  btn.addEventListener("click", () => {
+  button.addEventListener("click", () => {
     if (generating) return;
 
     if (listening) {
-      finishSpeech();
+      submitSpeech();
       return;
     }
 
-    finalText = "";
-    lastInterim = "";
-    speechStarted = false;
-
-    setTranscript("");
+    finalized = "";
+    interim = "";
+    submitted = false;
+    sessionActive = true;
+    transcriptText("");
 
     try {
-      speech.start();
-    } catch (error) {
-      setStatus(
-        "無法啟動麥克風：" + error.message
-      );
+      recognition.start();
+    } catch (e) {
+      sessionActive = false;
+      statusText("麥克風啟動失敗：" + e.message);
     }
   });
 }
 
+function submitSpeech() {
+  if (submitted || generating || !sessionActive) {
+    return;
+  }
 
-// ========================
-// 9. 結束語音並生成
-// ========================
-
-function finishSpeech() {
   clearTimeout(silenceTimer);
 
-  if (generating) return;
+  const idea = (finalized + " " + interim).trim();
 
-  const idea = (
-    finalText + " " + lastInterim
-  ).trim();
+  if (idea.length < 2) {
+    statusText("請先說出你的想像");
+    return;
+  }
 
-  speechStarted = false;
+  submitted = true;
+  sessionActive = false;
 
-  if (listening && speech) {
+  if (listening) {
     try {
-      speech.stop();
+      recognition.stop();
     } catch (_) {}
   }
 
   listening = false;
-
-  if (idea.length < 2) {
-    setStatus("請先說出一段想像");
-    updateButton();
-    return;
-  }
-
   generateScene(idea);
 }
 
-
-// ========================
-// 10. 呼叫 Gemini
-// ========================
+// ---------- Gemini SVG ----------
 
 async function generateScene(idea) {
   generating = true;
   updateButton();
 
-  setStatus(
-    "Gemini 正在把你的想像變成場景…"
-  );
+  statusText("AI 正在思考與繪製 SVG，請稍候…");
 
   try {
-    const response = await fetch(
-      "/api/generate-svg",
-      {
+    const controller = new AbortController();
+    const timer = setTimeout(
+      () => controller.abort(),
+      115000
+    );
+
+    let response;
+    try {
+      response = await fetch("/api/generate-svg", {
         method: "POST",
         headers: {
           "Content-Type": "application/json"
         },
-        body: JSON.stringify({ idea })
-      }
-    );
+        body: JSON.stringify({ idea }),
+        signal: controller.signal
+      });
+    } finally {
+      clearTimeout(timer);
+    }
 
-    // 先讀取文字，避免空回應直接解析失敗
     const raw = await response.text();
 
     let data;
-
     try {
       data = JSON.parse(raw);
     } catch (_) {
       throw new Error(
-        "伺服器沒有回傳有效 JSON，請確認新版 server.js 已部署"
+        "伺服器沒有回傳 JSON，請檢查 Render 部署"
       );
     }
 
     if (!response.ok || !data.ok) {
       throw new Error(
-        data.error ||
-        `伺服器錯誤 HTTP ${response.status}`
+        data.error || `HTTP ${response.status}`
       );
     }
 
-    // 將 SVG 轉成圖片
-    const svgBlob = new Blob(
-      [data.svg],
-      {
-        type: "image/svg+xml;charset=utf-8"
-      }
-    );
+    if (!data.svg || !data.svg.includes("<svg")) {
+      throw new Error("AI 回傳內容不是 SVG");
+    }
 
-    const url =
-      URL.createObjectURL(svgBlob);
+    statusText("正在將 SVG 載入 p5.js…");
+
+    const blob = new Blob([data.svg], {
+      type: "image/svg+xml;charset=utf-8"
+    });
+    const url = URL.createObjectURL(blob);
 
     try {
-      const img = await new Promise(
+      const loaded = await new Promise(
         (resolve, reject) => {
           loadImage(
             url,
             resolve,
             () => reject(
-              new Error("SVG 無法載入")
+              new Error("SVG 圖片無法顯示")
             )
           );
         }
       );
 
-      sceneImage = img;
+      sceneImage = loaded;
     } finally {
       URL.revokeObjectURL(url);
     }
 
-    setStatus(
-      "✨ 想像世界生成完成！可以繼續說新的想法"
+    statusText(
+      "✨ 想像世界生成成功！可以再次說話創造新場景"
     );
 
   } catch (error) {
-    setStatus(
-      "目前無法生成：" + error.message
-    );
+    console.error("Mindspace:", error);
 
-    console.error(error);
+    statusText(
+      error.name === "AbortError"
+        ? "等待超過 115 秒，請稍後重試"
+        : "生成失敗：" + error.message
+    );
 
   } finally {
     generating = false;
