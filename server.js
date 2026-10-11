@@ -1,315 +1,384 @@
 
-'use strict';
+"use strict";
 
-const http = require('node:http');
-const fs = require('node:fs');
-const path = require('node:path');
-
-const {
-  DOMParser,
-  XMLSerializer
-} = require('@xmldom/xmldom');
+const http = require("node:http");
+const fs = require("node:fs");
+const path = require("node:path");
 
 const PORT = Number(process.env.PORT) || 3000;
-const MODEL =
-  process.env.GEMINI_MODEL || 'gemini-3.8-flash';
-const API_KEY = process.env.GEMINI_API_KEY || '';
 
-const MAX_BODY = 8192;
+const API_KEY = process.env.GEMINI_API_KEY || "";
 
-function send(res, status, obj) {
+const PRIMARY_MODEL =
+  process.env.GEMINI_MODEL || "gemini-3.8-flash";
+
+const BACKUP_MODEL =
+  process.env.GEMINI_BACKUP_MODEL || "";
+
+const MAX_ATTEMPTS = 3;
+
+const REQUEST_TIMEOUT = 35000;
+
+const sleep = ms =>
+  new Promise(resolve => setTimeout(resolve, ms));
+
+// ========================================
+// 基本工具
+// ========================================
+
+function sendJSON(res, status, data) {
   if (res.headersSent || res.destroyed) return;
 
   res.writeHead(status, {
-    'Content-Type': 'application/json; charset=utf-8',
-    'Cache-Control': 'no-store'
+    "Content-Type": "application/json; charset=utf-8",
+    "Cache-Control": "no-store",
+    "X-Content-Type-Options": "nosniff"
   });
 
-  res.end(JSON.stringify(obj));
+  res.end(JSON.stringify(data));
 }
 
-function readBody(req) {
+function readJSON(req) {
   return new Promise((resolve, reject) => {
-    let chunks = [];
-    let size = 0;
-    let done = false;
+    let body = "";
+    let settled = false;
 
-    req.on('data', b => {
-      size += b.length;
+    req.on("data", chunk => {
+      if (settled) return;
 
-      if (size > MAX_BODY) {
-        done = true;
-        reject(new Error('輸入太長'));
+      body += chunk.toString();
+
+      if (body.length > 12000) {
+        settled = true;
+        reject(new Error("輸入內容過長"));
         req.destroy();
-        return;
       }
-
-      chunks.push(b);
     });
 
-    req.on('end', () => {
-      if (done) return;
+    req.on("end", () => {
+      if (settled) return;
 
       try {
-        resolve(
-          JSON.parse(
-            Buffer.concat(chunks).toString('utf8')
-          )
-        );
+        resolve(JSON.parse(body || "{}"));
       } catch {
-        reject(new Error('輸入格式不正確'));
+        reject(new Error("JSON 格式錯誤"));
       }
     });
 
-    req.on('error', reject);
+    req.on("error", reject);
   });
 }
 
-// ---------- SVG 安全白名單 ----------
+function escapeXML(value) {
+  return String(value)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&apos;");
+}
 
-const TAGS = new Set([
-  'svg',
-  'g',
-  'circle',
-  'ellipse',
-  'rect',
-  'path',
-  'polygon',
-  'polyline',
-  'line',
-  'defs',
-  'linearGradient',
-  'radialGradient',
-  'stop'
-]);
+// ========================================
+// Mindspace AI 視覺提示詞
+// ========================================
 
-const ATTRS = new Set([
-  'xmlns',
-  'viewBox',
-  'width',
-  'height',
-  'x',
-  'y',
-  'x1',
-  'x2',
-  'y1',
-  'y2',
-  'cx',
-  'cy',
-  'r',
-  'rx',
-  'ry',
-  'd',
-  'points',
-  'fill',
-  'stroke',
-  'stroke-width',
-  'stroke-linecap',
-  'stroke-linejoin',
-  'opacity',
-  'fill-opacity',
-  'stroke-opacity',
-  'transform',
-  'offset',
-  'stop-color',
-  'stop-opacity',
-  'gradientUnits',
-  'gradientTransform',
-  'fx',
-  'fy',
-  'spreadMethod',
-  'id'
-]);
+function createPrompt(idea) {
+  return `
+You are the visual art director of MINDSPACE,
+an interactive children's imagination installation.
 
-const REF =
-  /^url\(#([A-Za-z][\w-]{0,39})\)$/;
+A child describes an imaginary world:
 
-const NUM =
-  /^-?(?:\d+\.?\d*|\.\d+)(?:[ ,.-]+(?:\d+\.?\d*|\.\d+))*$/;
+"${idea}"
 
-// ---------- 檢查並整理 SVG ----------
+Create ONE complete, beautiful SVG illustration.
 
-function safeSVG(input) {
-  const match = String(input || '').match(
-    /<svg\b[\s\S]*?<\/svg\s*>/i
+VISUAL ART DIRECTION:
+
+Premium 2.5D handmade polymer clay illustration.
+
+Soft, rounded, sculptural shapes.
+
+Whimsical fantasy environment.
+
+Pastel colors with rich harmonious color variation.
+
+Subtle volumetric highlights.
+
+Soft ambient shadows.
+
+Layered foreground, middle ground and background.
+
+Gentle gradients that create depth.
+
+Beautiful, polished, gallery-quality composition.
+
+The visual appearance should feel like a handcrafted
+clay illustration, NOT flat vector clipart.
+
+Avoid simplistic icon-like objects.
+
+Avoid harsh outlines.
+
+Avoid geometric-looking placeholder shapes.
+
+Use detailed overlapping organic shapes
+to suggest handmade clay volume.
+
+COMPOSITION:
+
+Canvas size: 1000 x 600.
+
+The central area should remain relatively open
+because a child's physical clay character
+will be visually placed there later.
+
+Build a rich environment around the center.
+
+Include atmospheric details and beautiful
+decorative elements.
+
+Make the environment imaginative and distinctive.
+
+The child's description is the highest priority.
+
+Do not replace unusual imaginary objects with
+generic mushrooms, stars or flowers.
+
+SVG TECHNICAL REQUIREMENTS:
+
+Return a single standalone SVG document.
+
+Use:
+<svg xmlns="http://www.w3.org/2000/svg"
+width="1000"
+height="600"
+viewBox="0 0 1000 600">
+
+Allowed visual techniques:
+- paths
+- circles
+- ellipses
+- rectangles
+- polygons
+- linear gradients
+- radial gradients
+- opacity
+- transforms
+- groups
+
+Do not use:
+- JavaScript
+- scripts
+- CSS imports
+- external images
+- external fonts
+- foreignObject
+- animation elements
+- external URLs
+- event handlers
+- embedded HTML
+
+Do not add Markdown fences.
+
+Do not explain the artwork.
+
+Return SVG code only.
+
+The SVG must be complete and end with </svg>.
+
+Create the scene now.
+`;
+}
+
+// ========================================
+// SVG 擷取
+// ========================================
+
+function extractSVG(text) {
+  if (typeof text !== "string") {
+    throw new Error("Gemini 沒有回傳文字");
+  }
+
+  const cleaned = text
+    .replace(/```svg/gi, "")
+    .replace(/```xml/gi, "")
+    .replace(/```/g, "")
+    .trim();
+
+  const start = cleaned.indexOf("<svg");
+  const end = cleaned.lastIndexOf("</svg>");
+
+  if (start === -1 || end === -1) {
+    throw new Error(
+      "Gemini 回傳內容沒有完整 SVG"
+    );
+  }
+
+  const svg = cleaned.slice(
+    start,
+    end + "</svg>".length
   );
 
-  if (!match) {
-    throw new Error('AI 未回傳完整 SVG');
+  if (svg.length < 150) {
+    throw new Error("SVG 內容過短");
   }
 
-  const raw = match[0];
-
-  if (raw.length > 30000) {
-    throw new Error('SVG 過大，請重試');
+  if (svg.length > 350000) {
+    throw new Error("SVG 內容過大");
   }
 
-  let bad = false;
+  return svg;
+}
+
+// ========================================
+// SVG 安全檢查
+// ========================================
+
+const ALLOWED_TAGS = new Set([
+  "svg",
+  "defs",
+  "g",
+  "path",
+  "circle",
+  "ellipse",
+  "rect",
+  "line",
+  "polyline",
+  "polygon",
+  "linearGradient",
+  "radialGradient",
+  "stop",
+  "clipPath"
+]);
+
+const ALLOWED_ATTRIBUTES = new Set([
+  "xmlns",
+  "width",
+  "height",
+  "viewBox",
+  "x",
+  "y",
+  "x1",
+  "y1",
+  "x2",
+  "y2",
+  "cx",
+  "cy",
+  "r",
+  "rx",
+  "ry",
+  "d",
+  "points",
+  "fill",
+  "fill-opacity",
+  "fill-rule",
+  "stroke",
+  "stroke-width",
+  "stroke-linecap",
+  "stroke-linejoin",
+  "stroke-opacity",
+  "opacity",
+  "transform",
+  "id",
+  "offset",
+  "stop-color",
+  "stop-opacity",
+  "gradientUnits",
+  "gradientTransform",
+  "clip-path",
+  "preserveAspectRatio"
+]);
+
+function validateSVG(svg) {
+  const { DOMParser } = require("@xmldom/xmldom");
+
+  const parseErrors = [];
 
   const parser = new DOMParser({
-    onError: () => {
-      bad = true;
-    },
-    onWarning: () => {}
+    onError(level, message) {
+      if (level === "error" || level === "fatalError") {
+        parseErrors.push(message);
+      }
+    }
   });
 
   const doc = parser.parseFromString(
-    raw,
-    'image/svg+xml'
+    svg,
+    "image/svg+xml"
   );
 
-  if (
-    bad ||
-    !doc.documentElement ||
-    doc.documentElement.localName !== 'svg'
-  ) {
-    throw new Error('SVG 格式有誤');
+  if (parseErrors.length) {
+    throw new Error(
+      "SVG XML 格式錯誤：" + parseErrors[0]
+    );
   }
 
-  let nodes = 0;
-  const ids = new Set();
-  const refs = [];
+  const root = doc.documentElement;
+
+  if (!root || root.nodeName !== "svg") {
+    throw new Error("SVG 根元素不正確");
+  }
 
   function walk(node) {
     if (node.nodeType === 3) {
       if (node.nodeValue.trim()) {
         throw new Error(
-          'SVG 含有非圖形文字'
+          "SVG 包含不允許的文字內容"
         );
       }
       return;
     }
 
+    if (node.nodeType === 8) {
+      // 忽略 XML 註解
+      return;
+    }
+
     if (node.nodeType !== 1) {
       throw new Error(
-        'SVG 含有不支援的內容'
+        "SVG 包含不允許的節點"
       );
     }
 
-    nodes++;
+    const name = node.nodeName;
 
-    if (nodes > 120) {
-      throw new Error('SVG 圖形太多');
-    }
-
-    if (!TAGS.has(node.nodeName)) {
+    if (!ALLOWED_TAGS.has(name)) {
       throw new Error(
-        'SVG 包含不支援的圖形：' +
-        node.nodeName
+        "SVG 包含不允許的元素：" + name
       );
     }
 
-    for (
-      let i = 0;
-      i < node.attributes.length;
-      i++
-    ) {
-      const a = node.attributes.item(i);
-      const name = a.name;
-      const value = a.value.trim();
+    for (let i = 0; i < node.attributes.length; i++) {
+      const attr = node.attributes.item(i);
 
-      if (
-        !ATTRS.has(name) ||
-        value.length > 5000
-      ) {
+      if (!ALLOWED_ATTRIBUTES.has(attr.name)) {
         throw new Error(
-          'SVG 屬性不允許：' + name
+          "SVG 包含不允許的屬性：" + attr.name
         );
       }
 
-      if (name === 'xmlns') {
-        if (
-          value !==
-          'http://www.w3.org/2000/svg'
-        ) {
-          throw new Error(
-            'SVG 命名空間錯誤'
-          );
-        }
-        continue;
-      }
-
-      if (name === 'id') {
-        if (
-          !/^[A-Za-z][\w-]{0,39}$/.test(value)
-        ) {
-          throw new Error(
-            'SVG ID 不合法'
-          );
-        }
-
-        ids.add(value);
-        continue;
-      }
+      const value = attr.value;
 
       if (
-        name === 'fill' ||
-        name === 'stroke'
+        /javascript\s*:/i.test(value) ||
+        /data\s*:/i.test(value) ||
+        /https?:\/\//i.test(value) &&
+          attr.name !== "xmlns"
       ) {
-        const m = value.match(REF);
-
-        if (m) {
-          refs.push(m[1]);
-          continue;
-        }
-
-        if (
-          !/^(none|transparent|#[0-9a-fA-F]{3,8}|[a-zA-Z]{1,20})$/.test(value)
-        ) {
-          throw new Error(
-            'SVG 顏色不合法'
-          );
-        }
-        continue;
-      }
-
-      if (name === 'stop-color') {
-        if (
-          !/^#[0-9a-fA-F]{3,8}$/.test(value)
-        ) {
-          throw new Error(
-            '漸層顏色不合法'
-          );
-        }
-        continue;
-      }
-
-      if (
-        name === 'd' ||
-        name === 'points' ||
-        name === 'transform' ||
-        name === 'gradientTransform'
-      ) {
-        if (
-          !/^[\d\s,\.\-+eE a-zA-Z()]*$/.test(value) ||
-          /url|script|matrix3d/i.test(value)
-        ) {
-          throw new Error(
-            'SVG 路徑不合法'
-          );
-        }
-        continue;
-      }
-
-      if (name === 'viewBox') {
-        if (value !== '0 0 1000 600') {
-          throw new Error(
-            'SVG 尺寸不符'
-          );
-        }
-        continue;
-      }
-
-      if (
-        name === 'offset' &&
-        /^(?:100|[0-9]{1,2})%$/.test(value)
-      ) {
-        continue;
-      }
-
-      if (!NUM.test(value)) {
         throw new Error(
-          'SVG 數值不合法：' + name
+          "SVG 包含不安全的外部內容"
+        );
+      }
+
+      if (
+        /url\s*\(/i.test(value) &&
+        !/^url\(\s*#[A-Za-z_][\w.-]*\s*\)$/.test(
+          value.trim()
+        )
+      ) {
+        throw new Error(
+          "SVG 包含不允許的資源引用"
         );
       }
     }
@@ -323,135 +392,69 @@ function safeSVG(input) {
     }
   }
 
-  walk(doc.documentElement);
+  walk(root);
 
-  for (const ref of refs) {
-    if (!ids.has(ref)) {
-      throw new Error(
-        'SVG 漸層引用不存在'
-      );
-    }
-  }
-
-  doc.documentElement.setAttribute(
-    'xmlns',
-    'http://www.w3.org/2000/svg'
+  // 將畫布大小固定為 Mindspace 的比例
+  root.setAttribute("width", "1000");
+  root.setAttribute("height", "600");
+  root.setAttribute("viewBox", "0 0 1000 600");
+  root.setAttribute(
+    "xmlns",
+    "http://www.w3.org/2000/svg"
   );
 
-  doc.documentElement.setAttribute(
-    'viewBox',
-    '0 0 1000 600'
-  );
+  const { XMLSerializer } =
+    require("@xmldom/xmldom");
 
   return new XMLSerializer()
-    .serializeToString(
-      doc.documentElement
-    );
+    .serializeToString(doc);
 }
 
-// ---------- 黏土風格 AI 提示詞 ----------
+// ========================================
+// Gemini 單次請求
+// ========================================
 
-function prompt(idea) {
-  return `
-你是兒童互動藝術作品 Mindspace 的場景設計師。
-
-孩子自己捏的實體黏土生物是主角；
-你只創造它周圍的夢幻環境，不畫人物或主角。
-
-孩子的想像：
-「${idea}」
-
-畫風：
-高質感手捏黏土 clay art / polymer clay，
-圓潤厚實、粉嫩糖果色、層疊的花朵、
-蘑菇、雲朵、柔和立體光澤與陰影。
-
-SVG 無法真的呈現材質貼圖，
-所以用 2～3 層橢圓與圓形、
-高光、漸層，模擬立體黏土感。
-
-構圖：
-1000×600 透明底。
-中間 x=350～650、y=180～520
-留空給真實黏土角色。
-左右和上方有豐富場景。
-不能蓋滿中央。
-
-嚴格規格：
-只輸出一個完整 SVG。
-根節點必須是：
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 600">
-
-允許元素：
-svg,g,defs,linearGradient,radialGradient,stop,
-circle,ellipse,rect,path,polygon,polyline,line
-
-漸層 id 只能是英文字母數字。
-fill 可以使用 url(#id)。
-
-允許屬性：
-xmlns,viewBox,width,height,x,y,x1,x2,y1,y2,
-cx,cy,r,rx,ry,d,points,fill,stroke,
-stroke-width,stroke-linecap,stroke-linejoin,
-opacity,fill-opacity,stroke-opacity,transform,
-offset,stop-color,stop-opacity,gradientUnits,
-gradientTransform,fx,fy,spreadMethod,id
-
-禁止：
-style、class、文字、濾鏡、圖片、
-script、foreignObject、動畫、外部網址。
-
-請控制在 35～65 個 SVG 元素，
-以及 12000 字元內。
-
-優先畫完並閉合 SVG。
-使用柔和配色，讓物件具有陰影和高光。
-
-不要 Markdown，不要解說。
-`;
-}
-
-// ---------- 呼叫 Gemini ----------
-
-async function gemini(idea) {
-  const ctl = new AbortController();
+async function requestGemini(model, idea) {
+  const controller = new AbortController();
 
   const timer = setTimeout(
-    () => ctl.abort(),
-    90000
+    () => controller.abort(),
+    REQUEST_TIMEOUT
   );
 
   try {
-    const endpoint =
-      'https://generativelanguage.googleapis.com/v1beta/models/' +
-      encodeURIComponent(MODEL) +
-      ':generateContent';
+    const url =
+      "https://generativelanguage.googleapis.com" +
+      "/v1beta/models/" +
+      encodeURIComponent(model) +
+      ":generateContent";
 
-    const r = await fetch(endpoint, {
-      method: 'POST',
-      signal: ctl.signal,
+    const response = await fetch(url, {
+      method: "POST",
+      signal: controller.signal,
       headers: {
-        'Content-Type': 'application/json',
-        'x-goog-api-key': API_KEY
+        "Content-Type": "application/json",
+        "x-goog-api-key": API_KEY
       },
       body: JSON.stringify({
         contents: [
           {
+            role: "user",
             parts: [
               {
-                text: prompt(idea)
+                text: createPrompt(idea)
               }
             ]
           }
         ],
         generationConfig: {
-          temperature: .65,
+          temperature: 0.7,
           maxOutputTokens: 8192
         }
       })
     });
 
-    const raw = await r.text();
+    const raw = await response.text();
 
     let data;
 
@@ -459,182 +462,291 @@ async function gemini(idea) {
       data = JSON.parse(raw);
     } catch {
       throw new Error(
-        'Gemini 回傳格式不正確 (HTTP ' +
-        r.status +
-        ')'
+        "Gemini 回傳內容不是 JSON"
       );
     }
 
-    if (!r.ok) {
-      const e = new Error(
-        'Gemini HTTP ' +
-        r.status +
-        '：' +
-        (data.error?.message || '未知錯誤')
+    if (!response.ok) {
+      const error = new Error(
+        "Gemini HTTP " +
+        response.status +
+        "：" +
+        (
+          data.error?.message ||
+          "未知錯誤"
+        )
       );
 
-      e.status = r.status;
-      throw e;
+      error.status = response.status;
+
+      throw error;
     }
+
+    const candidate = data.candidates?.[0];
 
     const output = (
-      data.candidates?.[0]?.content?.parts || []
+      candidate?.content?.parts || []
     )
-      .map(p => p.text || '')
-      .join('');
+      .map(part => part.text || "")
+      .join("");
 
-    if (!output) {
+    if (!output.trim()) {
       throw new Error(
-        'Gemini 沒有產生圖形，原因：' +
+        "Gemini 沒有回傳 SVG。" +
+        "結束原因：" +
         (
-          data.candidates?.[0]?.finishReason ||
-          '未知'
+          candidate?.finishReason ||
+          "未知"
         )
       );
     }
 
-    return safeSVG(output);
+    return output;
 
   } finally {
     clearTimeout(timer);
   }
 }
 
-// ---------- HTTP 伺服器 ----------
+// ========================================
+// 自動重試 + 備用模型
+// ========================================
+
+async function generateSVG(idea) {
+  if (!API_KEY) {
+    throw new Error(
+      "Render 尚未設定 GEMINI_API_KEY"
+    );
+  }
+
+  const models = [PRIMARY_MODEL];
+
+  if (
+    BACKUP_MODEL &&
+    BACKUP_MODEL !== PRIMARY_MODEL
+  ) {
+    models.push(BACKUP_MODEL);
+  }
+
+  let lastError = null;
+
+  for (const model of models) {
+    for (
+      let attempt = 1;
+      attempt <= MAX_ATTEMPTS;
+      attempt++
+    ) {
+      try {
+        console.log(
+          "[Gemini] Model:",
+          model,
+          "Attempt:",
+          attempt
+        );
+
+        const output = await requestGemini(
+          model,
+          idea
+        );
+
+        const extracted = extractSVG(output);
+
+        const svg = validateSVG(extracted);
+
+        console.log(
+          "[Gemini] SVG generated successfully"
+        );
+
+        return {
+          svg,
+          model
+        };
+
+      } catch (error) {
+        lastError = error;
+
+        console.error(
+          "[Gemini] Generation error:",
+          error.message
+        );
+
+        const temporary =
+          [429, 500, 502, 503, 504]
+            .includes(error.status) ||
+          error.name === "AbortError" ||
+          error.name === "TimeoutError";
+
+        if (!temporary) {
+          // 例如模型不存在、API Key 錯誤，
+          // 或 SVG 本身不合法。
+          // 不再無意義地重試相同請求。
+          break;
+        }
+
+        if (attempt < MAX_ATTEMPTS) {
+          const delay =
+            2000 * Math.pow(2, attempt - 1) +
+            Math.floor(Math.random() * 1000);
+
+          console.log(
+            "[Gemini] Waiting",
+            delay,
+            "ms before retry"
+          );
+
+          await sleep(delay);
+        }
+      }
+    }
+  }
+
+  throw lastError ||
+    new Error("Gemini 無法生成 SVG");
+}
+
+// ========================================
+// HTTP 伺服器
+// ========================================
 
 const server = http.createServer(
   async (req, res) => {
-    const pathname = new URL(
-      req.url,
-      'http://localhost'
-    ).pathname;
+    try {
+      const url = new URL(
+        req.url || "/",
+        "http://localhost"
+      );
 
-    if (pathname === '/api/health') {
-      return send(res, 200, {
-        ok: true,
-        geminiKeyConfigured: !!API_KEY,
-        model: MODEL
-      });
-    }
-
-    if (pathname === '/api/generate-svg') {
-      if (req.method !== 'POST') {
-        return send(res, 405, {
-          ok: false,
-          error: '請使用 POST'
-        });
-      }
-
-      if (!API_KEY) {
-        return send(res, 503, {
-          ok: false,
-          error:
-            'Render 尚未設定 GEMINI_API_KEY'
-        });
-      }
-
-      let body;
-
-      try {
-        body = await readBody(req);
-      } catch (e) {
-        return send(res, 400, {
-          ok: false,
-          error: e.message
-        });
-      }
-
-      const idea = String(body.idea || '')
-        .trim()
-        .slice(0, 240);
-
-      if (idea.length < 2) {
-        return send(res, 400, {
-          ok: false,
-          error:
-            '請說出至少兩個字的想像'
-        });
-      }
-
-      try {
-        const svg = await gemini(idea);
-
-        console.log(
-          'SVG generated',
-          svg.length
-        );
-
-        return send(res, 200, {
+      // 健康檢查
+      if (url.pathname === "/api/health") {
+        return sendJSON(res, 200, {
           ok: true,
-          svg,
-          model: MODEL
+          geminiKeyConfigured: Boolean(API_KEY),
+          model: PRIMARY_MODEL,
+          backupModelConfigured:
+            Boolean(BACKUP_MODEL),
+          version: "mindspace-clay-retry-1"
         });
-
-      } catch (e) {
-        console.error(
-          'Gemini generation error:',
-          e.message
-        );
-
-        return send(
-          res,
-          e.status && e.status < 500
-            ? e.status
-            : 502,
-          {
-            ok: false,
-            error:
-              e.name === 'AbortError'
-                ? 'AI 超過 90 秒未回應，請縮短想像內容重試'
-                : e.message
-          }
-        );
       }
-    }
 
-    if (req.method !== 'GET') {
-      return send(res, 405, {
-        ok: false,
-        error: '不支援的方法'
-      });
-    }
-
-    const files = {
-      '/': 'index.html',
-      '/index.html': 'index.html',
-      '/sketch.js': 'sketch.js'
-    };
-
-    const filename = files[pathname];
-
-    if (!filename) {
-      return send(res, 404, {
-        ok: false,
-        error: 'Not Found'
-      });
-    }
-
-    fs.readFile(
-      path.join(__dirname, filename),
-      (err, data) => {
-        if (err) {
-          return send(res, 404, {
+      // AI SVG 生成
+      if (url.pathname === "/api/generate-svg") {
+        if (req.method !== "POST") {
+          return sendJSON(res, 405, {
             ok: false,
-            error: '找不到檔案'
+            error: "請使用 POST"
           });
         }
 
+        let body;
+
+        try {
+          body = await readJSON(req);
+        } catch (error) {
+          return sendJSON(res, 400, {
+            ok: false,
+            error: error.message
+          });
+        }
+
+        const idea = String(
+          body.idea || ""
+        ).trim().slice(0, 240);
+
+        if (idea.length < 2) {
+          return sendJSON(res, 400, {
+            ok: false,
+            error: "請至少輸入兩個字"
+          });
+        }
+
+        try {
+          const result = await generateSVG(idea);
+
+          return sendJSON(res, 200, {
+            ok: true,
+            svg: result.svg,
+            title: idea.slice(0, 35),
+            model: result.model,
+            fallback: false
+          });
+
+        } catch (error) {
+          console.error(
+            "[Mindspace] Final error:",
+            error.message
+          );
+
+          return sendJSON(res, 503, {
+            ok: false,
+            error:
+              "AI 場景生成失敗：" +
+              error.message
+          });
+        }
+      }
+
+      // 網站靜態檔案
+      if (req.method !== "GET") {
+        return sendJSON(res, 405, {
+          ok: false,
+          error: "Method Not Allowed"
+        });
+      }
+
+      const allowedFiles = {
+        "/": "index.html",
+        "/index.html": "index.html",
+        "/sketch.js": "sketch.js"
+      };
+
+      const filename =
+        allowedFiles[url.pathname];
+
+      if (!filename) {
+        return sendJSON(res, 404, {
+          ok: false,
+          error: "Not Found"
+        });
+      }
+
+      const filepath = path.join(
+        __dirname,
+        filename
+      );
+
+      fs.readFile(filepath, (error, data) => {
+        if (error) {
+          return sendJSON(res, 404, {
+            ok: false,
+            error: "找不到檔案：" + filename
+          });
+        }
+
+        const contentType =
+          filename.endsWith(".js")
+            ? "application/javascript; charset=utf-8"
+            : "text/html; charset=utf-8";
+
         res.writeHead(200, {
-          'Content-Type':
-            filename.endsWith('.js')
-              ? 'text/javascript; charset=utf-8'
-              : 'text/html; charset=utf-8',
-          'Cache-Control': 'no-cache'
+          "Content-Type": contentType,
+          "Cache-Control": "no-store",
+          "X-Content-Type-Options": "nosniff"
         });
 
         res.end(data);
-      }
-    );
+      });
+
+    } catch (error) {
+      console.error(
+        "[Server] Unexpected error:",
+        error
+      );
+
+      sendJSON(res, 500, {
+        ok: false,
+        error: "伺服器內部錯誤"
+      });
+    }
   }
 );
 
@@ -642,13 +754,21 @@ server.requestTimeout = 130000;
 
 server.listen(
   PORT,
-  '0.0.0.0',
+  "0.0.0.0",
   () => {
     console.log(
-      'Mindspace ready on',
-      PORT,
-      'model',
-      MODEL
+      "Mindspace running on port",
+      PORT
+    );
+
+    console.log(
+      "Primary Gemini model:",
+      PRIMARY_MODEL
+    );
+
+    console.log(
+      "Backup model configured:",
+      Boolean(BACKUP_MODEL)
     );
   }
 );
