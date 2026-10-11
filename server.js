@@ -11,9 +11,10 @@ const ROOT = __dirname;
 const PORT =
   Number(process.env.PORT) || 3000;
 
+
 const MODEL =
   process.env.GEMINI_MODEL ||
-  "gemini-2.5-flash";
+  "gemini-3.8-flash";
 
 const MIME = {
   ".html": "text/html; charset=utf-8",
