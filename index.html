@@ -1,123 +1,197 @@
 
-<!DOCTYPE html>
+<!doctype html>
 <html lang="zh-Hant">
 <head>
-  <meta charset="UTF-8">
-  <meta name="viewport"
-        content="width=device-width, initial-scale=1">
-  <meta name="theme-color" content="#142a36">
-  <title>Mindspace｜想像正在發生</title>
-  <style>
-    * { box-sizing: border-box; }
-    html, body {
-      margin: 0;
-      width: 100%;
-      height: 100%;
-      overflow: hidden;
-      background: #142a36;
-      font-family: Arial, "Noto Sans TC", sans-serif;
-    }
-    canvas { display: block; }
-    button { cursor: pointer; font-family: inherit; }
-    #fullscreenButton {
-      position: fixed;
-      top: 20px;
-      right: 20px;
-      z-index: 20;
-      padding: 11px 17px;
-      border: 1px solid #ffffff55;
-      border-radius: 25px;
-      color: white;
-      background: #ffffff22;
-    }
-    #panel {
-      position: fixed;
-      z-index: 20;
-      left: 50%;
-      bottom: 22px;
-      transform: translateX(-50%);
-      width: min(92vw, 600px);
-      display: flex;
-      flex-direction: column;
-      align-items: center;
-      gap: 9px;
-      text-align: center;
-      color: white;
-      pointer-events: none;
-    }
-    #panel > * { pointer-events: auto; }
-    #micButton {
-      padding: 14px 26px;
-      border: 1px solid #ffffff77;
-      border-radius: 35px;
-      background: #17546d;
-      color: white;
-      font-size: 17px;
-    }
-    #micButton:disabled {
-      opacity: 0.6;
-      cursor: wait;
-    }
-    #status {
-      max-width: 100%;
-      padding: 9px 14px;
-      border-radius: 13px;
-      background: #071923bb;
-      font-size: 14px;
-      line-height: 1.6;
-    }
-    #transcript {
-      max-width: 100%;
-      max-height: 75px;
-      overflow: auto;
-      font-size: 15px;
-      text-shadow: 0 1px 4px black;
-    }
-  </style>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Mindspace · Clay Dream Studio</title>
+<style>
+:root {
+  color-scheme: dark;
+  --cream: #fff2dc;
+  --glass: rgba(25,34,58,.65);
+}
+* { box-sizing: border-box; }
+html,body {
+  margin: 0;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  font-family: system-ui,'Noto Sans TC',sans-serif;
+  background: #15253e;
+  color: var(--cream);
+}
+canvas { display: block; }
+.hud {
+  position: fixed;
+  z-index: 5;
+  pointer-events: none;
+  inset: 0;
+}
+.brand {
+  position: absolute;
+  top: 24px;
+  left: 30px;
+  font-size: clamp(18px,2.3vw,32px);
+  font-weight: 800;
+  letter-spacing: .23em;
+  text-shadow: 0 3px 15px #14283b;
+}
+.subtitle {
+  font-size: 12px;
+  letter-spacing: .15em;
+  font-weight: 400;
+  opacity: .75;
+  margin-top: 7px;
+}
+.tools {
+  position: absolute;
+  right: 20px;
+  top: 22px;
+  display: flex;
+  gap: 8px;
+}
+.tools button,.panel button {
+  pointer-events: auto;
+  border: 1px solid #ffffff77;
+  color: #fffaf0;
+  background: #344b69b8;
+  border-radius: 999px;
+  padding: 12px 18px;
+  font-size: 15px;
+  cursor: pointer;
+  backdrop-filter: blur(12px);
+}
+button:disabled {
+  opacity: .5;
+  cursor: wait;
+}
+.panel {
+  position: absolute;
+  bottom: 18px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: min(94vw,700px);
+  background: var(--glass);
+  border: 1px solid #ffffff30;
+  border-radius: 24px;
+  padding: 16px 20px;
+  backdrop-filter: blur(18px);
+  text-align: center;
+  box-shadow: 0 14px 50px #0005;
+}
+.panel button.primary {
+  background: linear-gradient(125deg,#de8ea7,#b17bcc);
+  font-weight: 700;
+  min-width: 190px;
+  box-shadow: 0 5px 15px #0002;
+}
+.status {
+  font-size: 14px;
+  min-height: 23px;
+  margin: 10px auto 4px;
+  line-height: 1.5;
+}
+.transcript {
+  font-size: 15px;
+  min-height: 23px;
+  color: #ffe8a5;
+  line-height: 1.5;
+}
+.small {
+  font-size: 11px;
+  opacity: .7;
+  margin-top: 7px;
+}
+.stage-hint {
+  position: absolute;
+  left: 50%;
+  top: 58%;
+  transform: translate(-50%,-50%);
+  font-size: 12px;
+  letter-spacing: .15em;
+  text-align: center;
+  opacity: .5;
+  white-space: nowrap;
+  transition: opacity .4s;
+}
+.hidden { opacity: 0; }
+.row {
+  display: flex;
+  justify-content: center;
+  gap: 9px;
+  flex-wrap: wrap;
+}
+#typedIdea {
+  pointer-events: auto;
+  background: #ffffff12;
+  border: 1px solid #ffffff50;
+  border-radius: 999px;
+  padding: 11px 15px;
+  color: white;
+  width: min(100%,380px);
+  outline: none;
+}
+#typedIdea::placeholder { color: #ffffff99; }
+@media(max-width:650px) {
+  .brand { top: 18px; left: 16px; }
+  .tools { right: 12px; top: 80px; }
+  .panel { padding: 12px; }
+  .stage-hint { top: 47%; }
+}
+</style>
 </head>
 <body>
-  <button id="fullscreenButton">
-    ⛶ 全螢幕
-  </button>
-
-  <div id="panel">
-    <button id="micButton">
-      🎤 開始說出想像
-    </button>
-    <div id="status" role="status"
-         aria-live="polite">
-      點擊麥克風，說出你的想像
-    </div>
-    <div id="transcript"></div>
+<div class="hud">
+  <div class="brand">
+    MINDSPACE
+    <div class="subtitle">讓想像，長成一個世界</div>
   </div>
 
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.11.3/p5.min.js"></script>
-  <script src="./sketch.js"></script>
+  <div class="tools">
+    <button id="resetBtn">↺ 重設場景</button>
+    <button id="fullBtn">⛶ 全螢幕</button>
+  </div>
 
-  <script>
-    const fullButton =
-      document.getElementById("fullscreenButton");
+  <div class="stage-hint" id="stageHint">
+    你的黏土角色，站在故事中央
+  </div>
 
-    fullButton.addEventListener("click", async () => {
-      try {
-        if (!document.fullscreenElement) {
-          await document.documentElement.requestFullscreen();
-        } else {
-          await document.exitFullscreen();
-        }
-      } catch (e) {
-        alert("無法切換全螢幕：" + e.message);
-      }
-    });
+  <div class="panel">
+    <div class="row">
+      <button class="primary" id="micBtn">
+        🎤 開始說出想像
+      </button>
+      <button id="stopBtn" hidden>
+        ⏹ 完成並生成
+      </button>
+    </div>
 
-    document.addEventListener(
-      "fullscreenchange", () => {
-        fullButton.textContent =
-          document.fullscreenElement
-            ? "⤢ 離開全螢幕"
-            : "⛶ 全螢幕";
-      }
-    );
-  </script>
+    <div class="status" id="status"
+         role="status" aria-live="polite">
+      準備好了嗎？說說你想帶黏土角色去哪裡。
+    </div>
+
+    <div class="transcript" id="transcript"></div>
+
+    <div class="row">
+      <input
+        id="typedIdea"
+        maxlength="240"
+        placeholder="也可以打字測試，例如：棉花糖森林"
+      >
+      <button id="typeBtn">✨ 生成</button>
+    </div>
+
+    <div class="small">
+      建議使用電腦版 Chrome｜
+      本站不主動錄音或儲存音檔｜
+      AI 場景只當配角
+    </div>
+  </div>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.11.3/p5.min.js"></script>
+<script src="/sketch.js"></script>
 </body>
 </html>
